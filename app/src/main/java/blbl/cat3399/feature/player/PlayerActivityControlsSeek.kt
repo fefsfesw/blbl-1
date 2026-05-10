@@ -7,12 +7,14 @@ import android.view.ViewConfiguration
 import androidx.constraintlayout.widget.ConstraintSet
 import androidx.lifecycle.lifecycleScope
 import blbl.cat3399.R
+import blbl.cat3399.core.log.AppLog
 import blbl.cat3399.core.net.BiliClient
 import blbl.cat3399.core.prefs.AppPrefs
 import blbl.cat3399.feature.player.engine.BlblPlayerEngine
 import blbl.cat3399.feature.player.engine.PlayerEngineKind
 import java.util.Locale
 import kotlin.math.roundToInt
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -783,14 +785,23 @@ internal fun PlayerActivity.updateVideoShotPreview(
         width = currentVideoContentWidth ?: shot.fallbackAspectWidth,
         height = currentVideoContentHeight ?: shot.fallbackAspectHeight,
     )
+    previewView.onFrameDrawFailure = { t ->
+        disableVideoShotPreviewForCurrentVideo(reason = "draw", throwable = t)
+    }
 
     videoShotFetchJob?.cancel()
     videoShotFetchJob = lifecycleScope.launch {
         delay(16) // 16ms 防抖
         val frame =
-            runCatching { shot.getSpriteFrame((positionMs / 1000).toInt(), cache) }
-                .getOrNull()
-                ?: return@launch
+            try {
+                shot.getSpriteFrame((positionMs / 1000).toInt(), cache)
+            } catch (t: Throwable) {
+                if (t is CancellationException) throw t
+                disableVideoShotPreviewForCurrentVideo(reason = "decode", throwable = t)
+                return@launch
+            }
+
+        if (currentVideoShot !== shot || videoShotImageCache !== cache) return@launch
 
         previewView.spriteFrame = frame
         positionVideoShotPreviewX(previewView, trackView, progress, max)
@@ -800,6 +811,17 @@ internal fun PlayerActivity.updateVideoShotPreview(
             }
         }
     }
+}
+
+internal fun PlayerActivity.disableVideoShotPreviewForCurrentVideo(reason: String, throwable: Throwable? = null) {
+    AppLog.w("Player", "disable videoShot preview reason=$reason bvid=$currentBvid cid=$currentCid", throwable)
+    videoShotFetchJob?.cancel()
+    videoShotFetchJob = null
+    videoShotImageCache?.clear()
+    videoShotImageCache = null
+    currentVideoShot = null
+    binding.videoShotPreview.spriteFrame = null
+    binding.videoShotPreview.visibility = View.GONE
 }
 
 private fun positionVideoShotPreviewX(
